@@ -1,0 +1,33 @@
+services:
+  php:
+    build:
+      context: ./docker/php
+    volumes:
+      - ./api:/app
+    working_dir: /app
+    depends_on:
+      - postgres
+    environment:
+      COMPOSER_MEMORY_LIMIT: -1
+      # Real env vars take precedence over api/.env* files in Symfony's Dotenv,
+      # so the actual connection strings live here (committed, reproducible),
+      # not in api/.env.local (gitignored). Test isolation to es_wallet_test
+      # is done via doctrine.yaml's when@test dbname_suffix, not a second URL.
+      DATABASE_URL: postgresql://es_wallet:es_wallet@postgres:5432/es_wallet?serverVersion=16&charset=utf8
+      MESSENGER_TRANSPORT_DSN: doctrine://default?queue_name=async
+    tty: true
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: es_wallet
+      POSTGRES_PASSWORD: es_wallet
+      POSTGRES_DB: es_wallet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh:ro
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
