@@ -2,10 +2,16 @@ framework:
     messenger:
         failure_transport: failed
 
+        # No projector is registered yet (see task 05) — until then, a dispatched
+        # domain event legitimately has zero handlers; without this it would throw.
+        buses:
+            messenger.bus.default:
+                default_middleware:
+                    allow_no_handlers: true
+
         transports:
             async: '%env(MESSENGER_TRANSPORT_DSN)%'
             failed: 'doctrine://default?queue_name=failed'
 
         routing:
-            # Route your messages to the transports
-            # 'App\Message\YourMessage': async
+            'App\Wallet\Domain\Event\DomainEvent': async

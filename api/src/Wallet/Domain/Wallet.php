@@ -187,6 +187,15 @@ final class Wallet
      * Serializes state (not events) for the snapshot cache — see spec 6. The aggregate
      * version is tracked separately by the snapshot store, not part of this payload.
      */
+    /**
+     * Total number of events applied so far (history + uncommitted) — the repository
+     * uses this to compute expectedVersion for append() (see CLAUDE.md concurrency rule).
+     */
+    public function version(): int
+    {
+        return $this->version;
+    }
+
     public function toSnapshotState(): array
     {
         return [
