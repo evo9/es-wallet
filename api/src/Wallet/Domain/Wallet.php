@@ -5,10 +5,18 @@ declare(strict_types=1);
 namespace App\Wallet\Domain;
 
 use App\Wallet\Domain\Event\DomainEvent;
+use App\Wallet\Domain\Event\FundsHeld;
+use App\Wallet\Domain\Event\HoldCaptured;
+use App\Wallet\Domain\Event\HoldReleased;
 use App\Wallet\Domain\Event\MoneyDeposited;
+use App\Wallet\Domain\Event\MoneyWithdrawn;
 use App\Wallet\Domain\Event\WalletClosed;
 use App\Wallet\Domain\Event\WalletOpened;
+use App\Wallet\Domain\Exception\ActiveHoldsException;
 use App\Wallet\Domain\Exception\CurrencyMismatchException;
+use App\Wallet\Domain\Exception\DuplicateHoldException;
+use App\Wallet\Domain\Exception\HoldNotFoundException;
+use App\Wallet\Domain\Exception\InsufficientFundsException;
 use App\Wallet\Domain\Exception\InvalidAmountException;
 use App\Wallet\Domain\Exception\WalletClosedException;
 use App\Wallet\Domain\ValueObject\Money;
@@ -54,6 +62,23 @@ final class Wallet
         return $wallet;
     }
 
+    /**
+     * @param array{walletId: string, currency: string, balance: int, held: int, holds: array<string, int>, closed: bool} $state
+     */
+    public static function fromSnapshot(array $state, int $version): self
+    {
+        $wallet = new self();
+        $wallet->walletId = WalletId::fromString($state['walletId']);
+        $wallet->currency = $state['currency'];
+        $wallet->balance = $state['balance'];
+        $wallet->held = $state['held'];
+        $wallet->holds = $state['holds'];
+        $wallet->closed = $state['closed'];
+        $wallet->version = $version;
+
+        return $wallet;
+    }
+
     public function deposit(Money $money, string $source): void
     {
         if ($this->closed) {
@@ -71,13 +96,107 @@ final class Wallet
         $this->recordThat(new MoneyDeposited($this->walletId, $money->amount(), $money->currency(), $source));
     }
 
+    public function withdraw(Money $money, string $destination): void
+    {
+        if ($this->closed) {
+            throw new WalletClosedException($this->walletId);
+        }
+
+        if ($money->currency() !== $this->currency) {
+            throw new CurrencyMismatchException($this->currency, $money->currency());
+        }
+
+        if (!$money->isPositive()) {
+            throw new InvalidAmountException($money->amount());
+        }
+
+        if ($money->amount() > $this->available()) {
+            throw new InsufficientFundsException($money->amount(), $this->available());
+        }
+
+        $this->recordThat(new MoneyWithdrawn($this->walletId, $money->amount(), $money->currency(), $destination));
+    }
+
+    public function hold(string $holdId, Money $money): void
+    {
+        if ($this->closed) {
+            throw new WalletClosedException($this->walletId);
+        }
+
+        if ($money->currency() !== $this->currency) {
+            throw new CurrencyMismatchException($this->currency, $money->currency());
+        }
+
+        if (!$money->isPositive()) {
+            throw new InvalidAmountException($money->amount());
+        }
+
+        if ($money->amount() > $this->available()) {
+            throw new InsufficientFundsException($money->amount(), $this->available());
+        }
+
+        if (array_key_exists($holdId, $this->holds)) {
+            throw new DuplicateHoldException($holdId);
+        }
+
+        $this->recordThat(new FundsHeld($this->walletId, $holdId, $money->amount(), $money->currency()));
+    }
+
+    public function releaseHold(string $holdId): void
+    {
+        if ($this->closed) {
+            throw new WalletClosedException($this->walletId);
+        }
+
+        if (!array_key_exists($holdId, $this->holds)) {
+            throw new HoldNotFoundException($holdId);
+        }
+
+        $this->recordThat(new HoldReleased($this->walletId, $holdId));
+    }
+
+    public function captureHold(string $holdId): void
+    {
+        if ($this->closed) {
+            throw new WalletClosedException($this->walletId);
+        }
+
+        if (!array_key_exists($holdId, $this->holds)) {
+            throw new HoldNotFoundException($holdId);
+        }
+
+        $amount = $this->holds[$holdId];
+
+        $this->recordThat(new HoldCaptured($this->walletId, $holdId, $amount));
+    }
+
     public function close(): void
     {
         if ($this->closed) {
             return;
         }
 
+        if ($this->held !== 0) {
+            throw new ActiveHoldsException($this->walletId);
+        }
+
         $this->recordThat(new WalletClosed($this->walletId));
+    }
+
+    /**
+     * Serializes state (not events) for the snapshot cache — see spec 6. The aggregate
+     * version is tracked separately by the snapshot store, not part of this payload.
+     */
+    public function toSnapshotState(): array
+    {
+        return [
+            'walletId' => $this->walletId->toString(),
+            'currency' => $this->currency,
+            'balance' => $this->balance,
+            'held' => $this->held,
+            'holds' => $this->holds,
+            'closed' => $this->closed,
+        ];
     }
 
     /**
@@ -91,6 +210,11 @@ final class Wallet
         return $events;
     }
 
+    private function available(): int
+    {
+        return $this->balance - $this->held;
+    }
+
     private function recordThat(DomainEvent $event): void
     {
         $this->uncommittedEvents[] = $event;
@@ -102,6 +226,10 @@ final class Wallet
         match ($event::class) {
             WalletOpened::class => $this->applyWalletOpened($event),
             MoneyDeposited::class => $this->applyMoneyDeposited($event),
+            MoneyWithdrawn::class => $this->applyMoneyWithdrawn($event),
+            FundsHeld::class => $this->applyFundsHeld($event),
+            HoldReleased::class => $this->applyHoldReleased($event),
+            HoldCaptured::class => $this->applyHoldCaptured($event),
             WalletClosed::class => $this->applyWalletClosed($event),
         };
 
@@ -117,6 +245,30 @@ final class Wallet
     private function applyMoneyDeposited(MoneyDeposited $event): void
     {
         $this->balance += $event->amount;
+    }
+
+    private function applyMoneyWithdrawn(MoneyWithdrawn $event): void
+    {
+        $this->balance -= $event->amount;
+    }
+
+    private function applyFundsHeld(FundsHeld $event): void
+    {
+        $this->held += $event->amount;
+        $this->holds[$event->holdId] = $event->amount;
+    }
+
+    private function applyHoldReleased(HoldReleased $event): void
+    {
+        $this->held -= $this->holds[$event->holdId];
+        unset($this->holds[$event->holdId]);
+    }
+
+    private function applyHoldCaptured(HoldCaptured $event): void
+    {
+        $this->balance -= $event->amount;
+        $this->held -= $event->amount;
+        unset($this->holds[$event->holdId]);
     }
 
     private function applyWalletClosed(WalletClosed $event): void

@@ -44,7 +44,11 @@ final class AggregateScenario
         return $this;
     }
 
-    public function then(DomainEvent ...$expectedEvents): void
+    /**
+     * Returns self so a scenario can chain further when()/then() steps on the same
+     * aggregate (e.g. to observe how one command's effects constrain the next).
+     */
+    public function then(DomainEvent ...$expectedEvents): self
     {
         if ($this->caughtException !== null) {
             throw $this->caughtException;
@@ -67,11 +71,28 @@ final class AggregateScenario
                 $this->comparablePayload($actualEvent),
             );
         }
+
+        return $this;
     }
 
     public function thenThrows(string $exceptionClass): void
     {
         Assert::assertInstanceOf($exceptionClass, $this->caughtException);
+    }
+
+    /**
+     * Asserts the aggregate's serialized state (see Wallet::toSnapshotState()) rather than
+     * its recorded events — for scenarios about resulting state, not what was emitted.
+     */
+    public function thenState(array $expectedState): self
+    {
+        if ($this->caughtException !== null) {
+            throw $this->caughtException;
+        }
+
+        Assert::assertSame($expectedState, $this->wallet->toSnapshotState());
+
+        return $this;
     }
 
     private function comparablePayload(DomainEvent $event): array
