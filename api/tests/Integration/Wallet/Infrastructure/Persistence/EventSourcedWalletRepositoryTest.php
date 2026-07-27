@@ -15,6 +15,7 @@ use App\Wallet\Infrastructure\EventStore\EventSerializer;
 use App\Wallet\Infrastructure\EventStore\EventTypeRegistry;
 use App\Wallet\Infrastructure\EventStore\Upcaster\UpcasterChain;
 use App\Wallet\Infrastructure\Persistence\EventSourcedWalletRepository;
+use App\Wallet\Infrastructure\Snapshot\DbalSnapshotStore;
 use Doctrine\DBAL\Connection;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -22,6 +23,7 @@ use Symfony\Component\Messenger\MessageBusInterface;
 final class EventSourcedWalletRepositoryTest extends KernelTestCase
 {
     private Connection $connection;
+    private DbalSnapshotStore $snapshotStore;
     private EventSourcedWalletRepository $repository;
 
     protected function setUp(): void
@@ -30,7 +32,9 @@ final class EventSourcedWalletRepositoryTest extends KernelTestCase
 
         $this->connection = self::getContainer()->get(Connection::class);
         $this->connection->executeStatement('TRUNCATE TABLE wallet_events');
+        $this->connection->executeStatement('TRUNCATE TABLE wallet_snapshots');
 
+        $this->snapshotStore = new DbalSnapshotStore($this->connection);
         $this->repository = new EventSourcedWalletRepository(
             new DbalEventStore(
                 $this->connection,
@@ -38,6 +42,7 @@ final class EventSourcedWalletRepositoryTest extends KernelTestCase
                 new UpcasterChain(),
             ),
             self::getContainer()->get(MessageBusInterface::class),
+            $this->snapshotStore,
         );
     }
 
@@ -104,5 +109,44 @@ final class EventSourcedWalletRepositoryTest extends KernelTestCase
         $reloaded = $this->repository->get($walletId);
 
         self::assertSame(50, $reloaded->toSnapshotState()['balance']);
+    }
+
+    public function test_getting_a_wallet_uses_the_snapshot_instead_of_full_replay(): void
+    {
+        $walletId = WalletId::generate();
+        $wallet = Wallet::open($walletId, 'EUR');
+        $wallet->deposit(new Money(100, 'EUR'), 'topup');
+        $this->repository->save($wallet); // version 2
+
+        $this->snapshotStore->save($walletId, 2, $wallet->toSnapshotState());
+
+        // Simulate history compaction after the snapshot was taken: if get() ignored
+        // the snapshot and replayed from version 0, it would find nothing here and
+        // either throw or reconstruct an empty wallet — proving it actually used it.
+        $this->connection->executeStatement(
+            'DELETE FROM wallet_events WHERE aggregate_id = :walletId AND version <= 2',
+            ['walletId' => $walletId->toString()],
+        );
+
+        $reloaded = $this->repository->get($walletId);
+
+        self::assertSame(100, $reloaded->toSnapshotState()['balance']);
+    }
+
+    public function test_getting_a_wallet_falls_back_to_full_replay_when_the_snapshot_schema_is_incompatible(): void
+    {
+        $walletId = WalletId::generate();
+        $wallet = Wallet::open($walletId, 'EUR');
+        $wallet->deposit(new Money(100, 'EUR'), 'topup');
+        $this->repository->save($wallet);
+
+        // A snapshot is a cache, not the source of truth: an incompatible shape (e.g.
+        // after a Wallet state refactor) must not break loading — see README.
+        $this->snapshotStore->save($walletId, 2, ['unexpected' => 'shape']);
+
+        $reloaded = $this->repository->get($walletId);
+
+        self::assertSame(100, $reloaded->toSnapshotState()['balance']);
+        self::assertNull($this->snapshotStore->load($walletId), 'Incompatible snapshot should have been dropped.');
     }
 }

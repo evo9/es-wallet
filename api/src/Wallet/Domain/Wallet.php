@@ -67,16 +67,33 @@ final class Wallet
      */
     public static function fromSnapshot(array $state, int $version): self
     {
+        // `?? null` on every field (rather than direct access) so a missing key raises a
+        // clean TypeError from the typed-property assignment below instead of a PHP
+        // warning — callers (the repository) treat an incompatible shape as one error.
         $wallet = new self();
-        $wallet->walletId = WalletId::fromString($state['walletId']);
-        $wallet->currency = $state['currency'];
-        $wallet->balance = $state['balance'];
-        $wallet->held = $state['held'];
-        $wallet->holds = $state['holds'];
-        $wallet->closed = $state['closed'];
+        $wallet->walletId = WalletId::fromString($state['walletId'] ?? null);
+        $wallet->currency = $state['currency'] ?? null;
+        $wallet->balance = $state['balance'] ?? null;
+        $wallet->held = $state['held'] ?? null;
+        $wallet->holds = $state['holds'] ?? null;
+        $wallet->closed = $state['closed'] ?? null;
         $wallet->version = $version;
 
         return $wallet;
+    }
+
+    /**
+     * Applies already-committed events (e.g. the tail after a snapshot) directly via
+     * apply() — unlike recordThat(), these are NOT new events, so they must not land in
+     * the uncommitted buffer or be re-persisted/re-dispatched by the repository.
+     *
+     * @param iterable<DomainEvent> $events
+     */
+    public function applyHistory(iterable $events): void
+    {
+        foreach ($events as $event) {
+            $this->apply($event);
+        }
     }
 
     public function deposit(Money $money, string $source): void

@@ -32,3 +32,13 @@ services:
     App\Wallet\Application\RetryOnConcurrencyConflict:
         arguments:
             $conflictExceptionClass: 'App\Wallet\Infrastructure\EventStore\ConcurrencyException'
+
+    # Every Upcaster implementation is auto-tagged and collected here — a new upcaster
+    # class just needs to exist to be picked up, no extra wiring.
+    _instanceof:
+        App\Wallet\Infrastructure\EventStore\Upcaster\Upcaster:
+            tags: ['app.event_upcaster']
+
+    App\Wallet\Infrastructure\EventStore\Upcaster\UpcasterChain:
+        arguments:
+            $upcasters: !tagged_iterator app.event_upcaster

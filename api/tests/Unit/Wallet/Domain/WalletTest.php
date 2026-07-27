@@ -347,4 +347,22 @@ final class WalletTest extends TestCase
 
         self::assertSame($fromHistory->toSnapshotState(), $fromSnapshot->toSnapshotState());
     }
+
+    public function test_apply_history_updates_state_without_recording_new_events(): void
+    {
+        $walletId = WalletId::generate();
+        $wallet = Wallet::fromSnapshot([
+            'walletId' => $walletId->toString(),
+            'currency' => 'EUR',
+            'balance' => 100,
+            'held' => 0,
+            'holds' => [],
+            'closed' => false,
+        ], 2);
+
+        $wallet->applyHistory([new MoneyDeposited($walletId, 50, 'EUR', 'topup')]);
+
+        self::assertSame(150, $wallet->toSnapshotState()['balance']);
+        self::assertSame([], $wallet->pullUncommittedEvents());
+    }
 }

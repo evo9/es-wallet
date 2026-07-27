@@ -14,6 +14,7 @@ use App\Wallet\Infrastructure\EventStore\Upcaster\UpcasterChain;
 use App\Wallet\Infrastructure\Persistence\EventSourcedWalletRepository;
 use App\Wallet\Infrastructure\Projection\BalanceProjector;
 use App\Wallet\Infrastructure\Projection\RebuildProjectionCommand;
+use App\Wallet\Infrastructure\Snapshot\DbalSnapshotStore;
 use Doctrine\DBAL\Connection;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -34,7 +35,11 @@ final class RebuildTest extends KernelTestCase
         $this->connection->executeStatement('TRUNCATE TABLE wallet_events');
 
         $this->eventStore = new DbalEventStore($this->connection, new EventSerializer(new EventTypeRegistry()), new UpcasterChain());
-        $this->repository = new EventSourcedWalletRepository($this->eventStore, self::getContainer()->get(MessageBusInterface::class));
+        $this->repository = new EventSourcedWalletRepository(
+            $this->eventStore,
+            self::getContainer()->get(MessageBusInterface::class),
+            new DbalSnapshotStore($this->connection),
+        );
     }
 
     public function test_rebuild_restores_the_projection_from_the_event_store(): void

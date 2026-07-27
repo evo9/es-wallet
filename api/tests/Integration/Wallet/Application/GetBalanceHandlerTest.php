@@ -15,6 +15,7 @@ use App\Wallet\Infrastructure\EventStore\EventSerializer;
 use App\Wallet\Infrastructure\EventStore\EventTypeRegistry;
 use App\Wallet\Infrastructure\EventStore\Upcaster\UpcasterChain;
 use App\Wallet\Infrastructure\Persistence\EventSourcedWalletRepository;
+use App\Wallet\Infrastructure\Snapshot\DbalSnapshotStore;
 use Doctrine\DBAL\Connection;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -36,6 +37,7 @@ final class GetBalanceHandlerTest extends KernelTestCase
         $this->repository = new EventSourcedWalletRepository(
             new DbalEventStore($this->connection, new EventSerializer(new EventTypeRegistry()), new UpcasterChain()),
             self::getContainer()->get(MessageBusInterface::class),
+            new DbalSnapshotStore($this->connection),
         );
         $this->handler = new GetBalanceHandler($this->connection);
     }
