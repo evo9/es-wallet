@@ -9,6 +9,7 @@ use App\Wallet\Domain\ValueObject\WalletId;
 use App\Wallet\Domain\Wallet;
 use App\Wallet\Domain\WalletRepository;
 use App\Wallet\Infrastructure\EventStore\DbalEventStore;
+use App\Wallet\Infrastructure\Projection\ProjectableEvent;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 final readonly class EventSourcedWalletRepository implements WalletRepository
@@ -47,8 +48,10 @@ final readonly class EventSourcedWalletRepository implements WalletRepository
 
         // Extension point for task 07: upsert a snapshot here once version crosses
         // the threshold — after the commit above, same as the dispatch below.
+        $version = $expectedVersion;
         foreach ($events as $event) {
-            $this->bus->dispatch($event);
+            ++$version;
+            $this->bus->dispatch(new ProjectableEvent($event, $version));
         }
     }
 }

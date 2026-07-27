@@ -2,8 +2,8 @@ framework:
     messenger:
         failure_transport: failed
 
-        # No projector is registered yet (see task 05) — until then, a dispatched
-        # domain event legitimately has zero handlers; without this it would throw.
+        # Safety net for message types that (temporarily or permanently) have no
+        # handler — e.g. queries dispatched fire-and-forget-style in tests.
         buses:
             messenger.bus.default:
                 default_middleware:
@@ -14,4 +14,7 @@ framework:
             failed: 'doctrine://default?queue_name=failed'
 
         routing:
-            'App\Wallet\Domain\Event\DomainEvent': async
+            # ProjectableEvent, not the domain event itself: the projector needs the
+            # aggregate's stream position (last_version) for idempotency, and that is
+            # attached at dispatch time — see ProjectableEvent.
+            'App\Wallet\Infrastructure\Projection\ProjectableEvent': async

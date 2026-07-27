@@ -9,6 +9,7 @@ use App\Wallet\Domain\ValueObject\WalletId;
 use App\Wallet\Infrastructure\EventStore\Upcaster\UpcasterChain;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
 
 final readonly class DbalEventStore
@@ -94,5 +95,53 @@ final readonly class DbalEventStore
                 $occurredAt,
             );
         }
+    }
+
+    /**
+     * Reads the entire store in id (append) order, batched — used by the projection
+     * rebuild, which must replay every aggregate's events in the order they originally
+     * committed, not grouped by aggregate.
+     *
+     * @return iterable<array{aggregateId: WalletId, version: int, event: DomainEvent}>
+     */
+    public function loadAll(int $batchSize = 500): iterable
+    {
+        $lastId = 0;
+
+        do {
+            $rows = $this->connection->fetchAllAssociative(
+                <<<'SQL'
+                    SELECT id, aggregate_id, version, event_type, event_version, payload, occurred_at
+                    FROM wallet_events
+                    WHERE id > :lastId
+                    ORDER BY id ASC
+                    LIMIT :batchSize
+                    SQL,
+                ['lastId' => $lastId, 'batchSize' => $batchSize],
+                ['lastId' => ParameterType::INTEGER, 'batchSize' => ParameterType::INTEGER],
+            );
+
+            foreach ($rows as $row) {
+                $aggregateId = WalletId::fromString($row['aggregate_id']);
+                $payload = json_decode((string) $row['payload'], true, flags: JSON_THROW_ON_ERROR);
+                $occurredAt = new \DateTimeImmutable($row['occurred_at']);
+
+                $upcasted = $this->upcasterChain->upcast($row['event_type'], (int) $row['event_version'], $payload);
+
+                yield [
+                    'aggregateId' => $aggregateId,
+                    'version' => (int) $row['version'],
+                    'event' => $this->serializer->deserialize(
+                        $row['event_type'],
+                        $upcasted['event_version'],
+                        $upcasted['payload'],
+                        $aggregateId,
+                        $occurredAt,
+                    ),
+                ];
+
+                $lastId = (int) $row['id'];
+            }
+        } while (count($rows) === $batchSize);
     }
 }
